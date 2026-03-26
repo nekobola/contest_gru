@@ -25,6 +25,7 @@ from src.data.tensor_builder import build_rolling_tensors
 from src.data.quant_dataset import create_dataloaders
 from src.model.quant_gru import QuantGRU, train_model
 from src.inference.portfolio_generator import generate_portfolio
+from src.evaluation.backtest import backtest_portfolio
 
 warnings.filterwarnings('ignore')
 
@@ -184,6 +185,55 @@ def main():
     # 文件已在上方保存
     print(f"[INFO] 结果已保存至: {output_path}")
     print(f"[INFO] 文件编码: UTF-8")
+    print()
+    
+    # 步骤7: 回测验证 (使用验证集数据，避免未来数据泄漏)
+    print("=" * 70)
+    print("步骤7: 回测验证 (基于验证集真实价格)")
+    print("=" * 70)
+    
+    # 获取验证集对应的日期范围
+    n_days_total = X_tensor.shape[0]
+    train_size = int(n_days_total * CONFIG['train_ratio'])
+    val_start_idx = train_size
+    
+    # 从 df_features 获取唯一日期列表（按序）
+    unique_dates = sorted(df_features['date'].unique())
+    # 考虑滚动窗口偏移：张量数据比原始数据少 (window-1) 天
+    window_offset = CONFIG['window'] - 1
+    valid_dates = unique_dates[window_offset:]
+    
+    # 验证集日期
+    val_dates = valid_dates[val_start_idx:]
+    
+    # 提取验证集期间的收盘价作为回测价格基准
+    # 构建价格数据表：列为股票代码，行为日期
+    price_data = df_features[df_features['date'].isin(val_dates)].pivot(
+        index='date', columns='ticker', values='close'
+    )
+    price_data = price_data.reindex(columns=tickers)
+    price_data = price_data.fillna(method='ffill').fillna(method='bfill')
+    
+    print(f"[INFO] 验证集数据范围: {val_dates[0]} 至 {val_dates[-1]}")
+    print(f"[INFO] 验证集天数: {len(val_dates)}")
+    print(f"[INFO] 回测价格数据形状: {price_data.shape}")
+    
+    # 调用回测函数
+    backtest_result = backtest_portfolio(
+        portfolio_df=result_df,
+        price_data=price_data,
+        period=min(5, len(val_dates) - 1)
+    )
+    
+    # 打印回测结果
+    print(f"\n[RESULT] 回测结果:")
+    print(f"  - 回测周期: {min(5, len(val_dates) - 1)} 天")
+    print(f"  - 累计收益率: {backtest_result['cumulative_return']:.4f} ({backtest_result['cumulative_return']*100:.2f}%)")
+    print(f"  - 最终组合价值: {backtest_result['final_value']:.6f}")
+    
+    if backtest_result['daily_returns']:
+        avg_daily_return = sum(backtest_result['daily_returns']) / len(backtest_result['daily_returns'])
+        print(f"  - 日均收益率: {avg_daily_return:.4f} ({avg_daily_return*100:.2f}%)")
     print()
     
     # 验证输出格式
